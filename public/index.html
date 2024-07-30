@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat App</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/forge/0.10.0/forge.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f4f4f9;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+        }
+        h1 {
+            color: #333;
+        }
+        #auth, #chat {
+            background: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            width: 300px;
+        }
+        input[type="text"], input[type="password"], button {
+            width: 100%;
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+            border: 1px solid #ccc;
+        }
+        button {
+            background-color: #007bff;
+            color: #fff;
+            border: none;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        #messages {
+            max-height: 200px;
+            overflow-y: auto;
+            margin-bottom: 10px;
+        }
+        #messages div {
+            padding: 5px;
+            margin: 5px 0;
+            background-color: #f1f1f1;
+            border-radius: 4px;
+        }
+        #userInfo {
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Chat App</h1>
+    <div id="auth">
+        <h2>Register</h2>
+        <form id="registerForm">
+            <input id="registerUsername" type="text" placeholder="Username" required>
+            <input id="registerPassword" type="password" placeholder="Password" required>
+            <button type="submit">Register</button>
+        </form>
+        <h2>Login</h2>
+        <form id="loginForm">
+            <input id="loginUsername" type="text" placeholder="Username" required>
+            <input id="loginPassword" type="password" placeholder="Password" required>
+            <button type="submit">Login</button>
+        </form>
+    </div>
+    <div id="chat" style="display:none;">
+        <div id="userInfo">
+            <span id="currentUsername"></span> | <span id="currentUID"></span>
+        </div>
+        <input id="recipient" type="text" placeholder="Recipient Username" required>
+        <div id="messages"></div>
+        <input id="messageInput" type="text" placeholder="Type a message..." autocomplete="off">
+        <button onclick="sendMessage()">Send</button>
+        <button onclick="decodeMessages()">Decode Messages</button>
+        <button onclick="clearMessages()">Tải Lại Màn Hình Chat</button>
+        <button onclick="deleteChatHistory()">Xóa Lịch Sử Chat</button>
+    </div>
+    <script>
+        let username;
+        let uid;
+        let ws;
+        let privateKey;
+
+        const serverIp = '192.168.1.35'; // Địa chỉ IP của máy chủ.
+
+        document.getElementById('registerForm').onsubmit = async function(event) {
+            event.preventDefault();
+            const response = await fetch(`http://${serverIp}:8080/register`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    username: document.getElementById('registerUsername').value,
+                    password: document.getElementById('registerPassword').value
+                })
+            });
+            alert(await response.text());
+        };
+
+        document.getElementById('loginForm').onsubmit = async function(event) {
+            event.preventDefault();
+            const response = await fetch(`http://${serverIp}:8080/login`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    username: document.getElementById('loginUsername').value,
+                    password: document.getElementById('loginPassword').value
+                })
+            });
+
+            if (response.status === 200) {
+                const result = await response.json();
+                username = document.getElementById('loginUsername').value;
+                privateKey = result.privateKey;
+                uid = result.uid; // Nhận UID từ server
+
+                document.getElementById('auth').style.display = 'none';
+                document.getElementById('chat').style.display = 'block';
+
+                // Cập nhật thông tin tài khoản đang đăng nhập
+                document.getElementById('currentUsername').textContent = `Username: ${username}`;
+                document.getElementById('currentUID').textContent = `UID: ${uid}`;
+
+                startWebSocket();
+            } else {
+                alert(await response.text());
+            }
+        };
+
+        function startWebSocket() {
+            ws = new WebSocket(`ws://${serverIp}:8080`);
+
+            ws.onopen = function() {
+                console.log('WebSocket connection opened');
+                ws.send(JSON.stringify({ type: 'register', username: username }));
+            };
+
+            ws.onmessage = function(event) {
+                console.log('WebSocket message received:', event.data);
+                const data = JSON.parse(event.data);
+                const messages = document.getElementById('messages');
+                const message = document.createElement('div');
+                message.textContent = `${data.sender}: ${data.message}`;
+                messages.appendChild(message);
+            };
+
+            ws.onclose = function() {
+                console.log('WebSocket connection closed');
+            };
+
+            ws.onerror = function(error) {
+                console.error('WebSocket error:', error);
+            };
+        }
+
+        async function sendMessage() {
+            const recipient = document.getElementById('recipient').value;
+            const input = document.getElementById('messageInput').value;
+
+            if (!recipient || !input) {
+                alert('Please enter both recipient and message');
+                return;
+            }
+
+            // Lấy khóa công khai của người nhận
+            const response = await fetch(`http://${serverIp}:8080/getPublicKey?username=${recipient}`);
+            if (!response.ok) {
+                alert('Could not fetch public key');
+                return;
+            }
+
+            const recipientPublicKeyPem = await response.text();
+            const recipientPublicKey = forge.pki.publicKeyFromPem(recipientPublicKeyPem);
+            const encryptedMessage = forge.util.encode64(recipientPublicKey.encrypt(input, 'RSA-OAEP'));
+
+            ws.send(JSON.stringify({
+                type: 'message',
+                sender: username,
+                recipient: recipient,
+                message: encryptedMessage
+            }));
+
+            document.getElementById('messageInput').value = '';
+            console.log(`Message sent to ${recipient}: ${input} (encrypted: ${encryptedMessage})`);
+        }
+
+        async function decodeMessages() {
+            try {
+                const response = await fetch(`http://${serverIp}:8080/messages`);
+                const messages = await response.json();
+
+                const messagesDiv = document.getElementById('messages');
+                messagesDiv.innerHTML = '';
+
+                if (privateKey) {
+                    const userPrivateKey = forge.pki.privateKeyFromPem(privateKey);
+                    messages.forEach(msg => {
+                        try {
+                            // Giải mã tin nhắn
+                            const decryptedMessage = userPrivateKey.decrypt(forge.util.decode64(msg.message), 'RSA-OAEP');
+                            const messageDiv = document.createElement('div');
+                            messageDiv.textContent = `${msg.sender}: ${decryptedMessage}`;
+                            messagesDiv.appendChild(messageDiv);
+                        } catch (error) {
+                            console.error('Error decrypting message:', error);
+                            const messageDiv = document.createElement('div');
+                            messageDiv.textContent = `${msg.sender}: [Encrypted message]`;
+                            messagesDiv.appendChild(messageDiv);
+                        }
+                    });
+                } else {
+                    console.error('Private key not available');
+                }
+            } catch (error) {
+                console.error('Error fetching or decoding messages:', error);
+            }
+        }
+
+        function clearMessages() {
+            document.getElementById('messages').innerHTML = '';
+        }
+
+        async function deleteChatHistory() {
+            try {
+                const response = await fetch(`http://${serverIp}:8080/messages`, {
+                    method: 'DELETE'
+                });
+
+                if (response.ok) {
+                    document.getElementById('messages').innerHTML = '';
+                    alert('Messages cleared successfully');
+                } else {
+                    alert('Failed to clear messages');
+                }
+            } catch (error) {
+                console.error('Error clearing messages:', error);
+                alert('Error clearing messages');
+            }
+        }
+    </script>
+</body>
+</html>
